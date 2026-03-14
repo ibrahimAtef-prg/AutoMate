@@ -172,7 +172,7 @@ Every `ValidationResult` exposes full counts:
 | `n_rejected_duplicates` | Rows dropped by DuplicatePreFilter |
 | `warnings` | Human-readable messages for each event |
 
-These are surfaced in the VS Code Checkpoint Monitor panel with a per-round breakdown. See [`checkpoint-monitor.md`](checkpoint-monitor.md).
+These are surfaced in the VS Code Checkpoint Monitor panel with a per-round breakdown. See [`checkpoint-monitor.md`](CheckPoint.md).
 
 ---
 
@@ -197,5 +197,3 @@ The validation layer operates on **generated data** — it does not scan the ori
 - Temporal leakage analysis (date-based splits)
 - Label contamination detection in model training scripts
 - User-configurable thresholds per column
-
-See [`planning/roadmap.md`](../../planning/roadmap.md) for the full roadmap.
