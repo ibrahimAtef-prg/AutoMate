@@ -85,7 +85,14 @@ export function activate(context: vscode.ExtensionContext) {
             );
         })
     );
-
+    
+    context.subscriptions.push(
+        vscode.commands.registerCommand('idelense.openCheckpoint', async () => {
+            vscode.window.showInformationMessage(
+                'IDE Lense: Run Parse + Generate first to open the Checkpoint Monitor.'
+            );
+        })
+    );
 }
 
 export function deactivate() {}
