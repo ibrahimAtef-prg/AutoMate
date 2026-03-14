@@ -1,4 +1,5 @@
 # AutoMate
+Auto Mate is a VS Code extension built as a 2nd year final project by the NNA Team at Helwan International Technological University. It targets ML engineers, AI researchers, and data scientists who spend a significant portion of their time not writing models — but fixing, cleaning, and augmenting the datasets those models depend on. The core problem it solves is that bad training data silently breaks ML pipelines: too little data causes underfitting, duplicate or leaked rows cause overfitting, mislabelled samples corrupt gradients, and out-of-distribution values cause production failures. Auto Mate addresses all of this without making the engineer leave their editor.
 
 <div align="center">
 
