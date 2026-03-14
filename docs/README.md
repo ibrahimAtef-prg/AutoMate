@@ -42,7 +42,7 @@
 This is where it all started.
 
 <div align="center">
-  <img src="assets/IDE_Extension_Planning_s0.png" alt="Original planning whiteboard — Auto Mate first design session" width="100%"/>
+  <img src="docs/assets/IDE_Extension_Planning_s0.png" alt="Original planning whiteboard — Auto Mate first design session" width="100%"/>
   <br/>
   <sub>The original flow diagram from our first design session — before a single line of code was written.</sub>
 </div>
