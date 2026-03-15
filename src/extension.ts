@@ -221,46 +221,147 @@ function runBaseline(context: vscode.ExtensionContext, filePath: string, kind: s
 /*
 ----------------------------------------
 Run Generator
+spawnGenerator exposes the child process so the webview Cancel button
+can kill it mid-run.  It also accepts an optional onProgress callback
+that is fired every ~500 ms while the Python process is running by
+reading the checkpoint file the generator writes to disk.
+
+Checkpoint file location (mirrors checkp.py § default_path):
+  <cacheDir>/<fingerprint[:32]>_checkpoint.json
+
+Because we don't know the fingerprint before the first commit, we scan
+the cache directory for any *_checkpoint.json that appears or is
+modified after the spawn timestamp.
 ----------------------------------------
 */
 
-function runGenerator(context: vscode.ExtensionContext, filePath: string, baselinePath: string, n: number): Promise<any> {
+interface GeneratorHandle {
+    proc:    cp.ChildProcess;
+    promise: Promise<any>;
+}
 
-    return new Promise((resolve, reject) => {
+interface ProgressSnapshot {
+    pct        : number;   // 0–100
+    collected  : number;   // rows committed so far
+    requested  : number;   // target row count
+    round      : number;   // number of commits so far
+    status     : string;   // "in_progress" | "complete" | "failed"
+    lastCommit : string;   // ISO timestamp of last commit, or ""
+}
 
-        const scriptPath = path.join(context.extensionPath, "src", "utils", "generator.py");
+/** Scan cacheDir and return the path of the checkpoint JSON that was
+ *  last-modified after `afterMs` (epoch ms).  Returns null if none found. */
+function findActiveCheckpoint(cacheDir: string, afterMs: number): string | null {
+    let best: string | null = null;
+    let bestMtime = 0;
+    try {
+        for (const name of fs.readdirSync(cacheDir)) {
+            if (!name.endsWith("_checkpoint.json")) { continue; }
+            const full  = path.join(cacheDir, name);
+            const mtime = fs.statSync(full).mtimeMs;
+            if (mtime >= afterMs && mtime > bestMtime) {
+                best     = full;
+                bestMtime = mtime;
+            }
+        }
+    } catch { /* cacheDir may not exist yet */ }
+    return best;
+}
 
-        // 4c — use workspace-relative cache dir, not one buried inside the extension bundle
-        const workspaceDir = vscode.workspace.workspaceFolders?.[0].uri.fsPath ?? os.tmpdir();
-        const cacheDir = path.join(workspaceDir, '.idelense', 'cache');
-        fs.mkdirSync(cacheDir, { recursive: true });
+/** Parse the checkpoint file and return a ProgressSnapshot. */
+function readProgress(cpPath: string): ProgressSnapshot | null {
+    try {
+        const raw     = JSON.parse(fs.readFileSync(cpPath, "utf-8"));
+        const commits = (raw.commits ?? []) as any[];
+        const collected = commits.reduce((s: number, c: any) => s + (c.n_rows ?? 0), 0);
+        const requested = Number(raw.n_requested ?? 0);
+        const pct       = requested > 0 ? Math.min(100, Math.round(collected / requested * 100)) : 0;
+        const lastCommit = commits.length > 0 ? (commits[commits.length - 1].committed_at ?? "") : "";
+        return { pct, collected, requested, round: commits.length, status: raw.status ?? "in_progress", lastCommit };
+    } catch {
+        return null;
+    }
+}
 
-        const proc = cp.spawn(getPythonPath(), [   // 4a
-            scriptPath,
-            filePath,
-            baselinePath,
-            "--n", String(n),
-            "--cache-dir", cacheDir
-        ]);
+function spawnGenerator(
+    context:      vscode.ExtensionContext,
+    filePath:     string,
+    baselinePath: string,
+    n:            number,
+    cacheDir:     string,
+    onProgress?:  (snap: ProgressSnapshot) => void
+): GeneratorHandle {
 
+    const scriptPath = path.join(context.extensionPath, "src", "utils", "generator.py");
+    const spawnTime  = Date.now();
+
+    const proc = cp.spawn(getPythonPath(), [
+        scriptPath, filePath, baselinePath,
+        "--n", String(n),
+        "--cache-dir", cacheDir
+    ]);
+
+    // ── Checkpoint poller ────────────────────────────────────────────────
+    let cpPath: string | null = null;
+    let lastRound             = -1;
+
+    const poller = onProgress
+        ? setInterval(() => {
+            if (!cpPath) { cpPath = findActiveCheckpoint(cacheDir, spawnTime - 200); }
+            if (!cpPath) { return; }
+            const snap = readProgress(cpPath);
+            if (!snap)  { return; }
+            // Only fire when something actually changed
+            if (snap.round !== lastRound || snap.status !== "in_progress") {
+                lastRound = snap.round;
+                onProgress(snap);
+            }
+        }, 500)
+        : null;
+
+    const promise = new Promise<any>((resolve, reject) => {
         let output = "";
-        let error = "";
-
-        proc.stdout.on("data", (data: { toString(): string }) => output += data.toString());
-        proc.stderr.on("data", (data: { toString(): string }) => error += data.toString());
-
+        let error  = "";
+        proc.stdout.on("data", (d: { toString(): string }) => output += d.toString());
+        proc.stderr.on("data", (d: { toString(): string }) => error  += d.toString());
         proc.on("close", (code: number | null) => {
-            if (code !== 0) {
-                reject(error || `generator.py exited with code ${code}`);
-                return;
-            }
-            try {
-                resolve(JSON.parse(output));
-            } catch {
-                reject("Invalid JSON from generator.py");
-            }
+            if (poller) { clearInterval(poller); }
+            if (code !== 0) { reject(error || `generator.py exited with code ${code}`); return; }
+            try   { resolve(JSON.parse(output)); }
+            catch { reject("Invalid JSON from generator.py"); }
         });
     });
+
+    return { proc, promise };
+}
+
+/** Backward-compatible wrapper (no progress callback, no external cacheDir). */
+function runGenerator(
+    context:      vscode.ExtensionContext,
+    filePath:     string,
+    baselinePath: string,
+    n:            number
+): Promise<any> {
+    const workspaceDir = vscode.workspace.workspaceFolders?.[0].uri.fsPath ?? os.tmpdir();
+    const cacheDir     = path.join(workspaceDir, ".idelense", "cache");
+    fs.mkdirSync(cacheDir, { recursive: true });
+    return spawnGenerator(context, filePath, baselinePath, n, cacheDir).promise;
+}
+
+/*
+----------------------------------------
+Infer engine name from baseline row count.
+Mirrors the thresholds in generator.py:
+  rows <  1 000              → statistical
+  1 000 <= rows < 50 000     → probabilistic
+  rows >= 50 000             → ctgan
+----------------------------------------
+*/
+
+function inferEngine(rowCount: number): string {
+    if (rowCount < 1_000)  { return "statistical"; }
+    if (rowCount < 50_000) { return "probabilistic"; }
+    return "ctgan";
 }
 
 /*
@@ -285,6 +386,15 @@ with Generate button wired to generator
 ----------------------------------------
 */
 
+/*
+----------------------------------------
+Show parse + baseline in webview
+Generate panel at top, data panes below side-by-side.
+Progress is driven by real checkpoint-file polling — the bar reflects
+actual committed rows, not a fake timer.
+----------------------------------------
+*/
+
 function showCombinedResult(context: vscode.ExtensionContext, ast: any, baseline: any, filePath: string) {
 
     const panel = vscode.window.createWebviewPanel(
@@ -294,56 +404,648 @@ function showCombinedResult(context: vscode.ExtensionContext, ast: any, baseline
         { enableScripts: true }
     );
 
-    panel.webview.html = `
-    <html>
-    <body style="font-family: monospace; padding: 12px;">
-        <h2>IDE Lense — Parse Output</h2>
-        <pre>${JSON.stringify(ast, null, 2)}</pre>
+    const baselineRows: number = baseline?.meta?.row_count ?? 0;
+    const engineName:   string = inferEngine(baselineRows);
+    const colCount:     number = baseline?.meta?.column_count ?? 0;
+    const dataKind:     string = (baseline?.meta?.dataset_kind ?? "").toUpperCase() || "—";
 
-        <hr/>
+    const astJson      = JSON.stringify(ast,      null, 2).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");
+    const baselineJson = JSON.stringify(baseline, null, 2).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");
 
-        <h2>IDE Lense — Baseline Output</h2>
-        <pre>${JSON.stringify(baseline, null, 2)}</pre>
+    // NOTE: No Content-Security-Policy meta tag — VS Code injects acquireVsCodeApi()
+    // before user scripts, and a restrictive CSP will silently block it.
+    panel.webview.html = `<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
-        <hr/>
+  html, body {
+    height     : 100%;
+    font-family: var(--vscode-font-family);
+    font-size  : 13px;
+    color      : var(--vscode-foreground);
+    background : var(--vscode-editor-background);
+  }
 
-        <h2>Generate Synthetic Data</h2>
-        <label>Rows: <input id="n" type="number" value="500" min="1" style="width:80px"/></label>
-        &nbsp;
-        <button onclick="generate()">Generate</button>
-        <p id="status" style="color:gray;font-size:12px"></p>
+  body {
+    display       : flex;
+    flex-direction: column;
+    height        : 100vh;
+    overflow      : hidden;
+  }
 
-        <script>
-            const vscode = acquireVsCodeApi();
-            function generate() {
-                const n = parseInt(document.getElementById('n').value, 10);
-                document.getElementById('status').textContent = 'Running...';
-                vscode.postMessage({ command: 'generate', n });
+  /* ── Generate panel (top strip) ─────────────────────────────── */
+  .gen-panel {
+    flex-shrink  : 0;
+    padding      : 14px 18px 14px;
+    background   : var(--vscode-sideBar-background, var(--vscode-editor-background));
+    border-bottom: 2px solid var(--vscode-focusBorder, #007fd4);
+  }
+
+  .gen-title {
+    font-size     : 10px;
+    font-weight   : 700;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color         : var(--vscode-focusBorder, #007fd4);
+    margin-bottom : 10px;
+  }
+
+  /* meta pills */
+  .meta-row { display:flex; flex-wrap:wrap; gap:6px; margin-bottom:12px; }
+
+  .pill {
+    display      : inline-flex;
+    align-items  : center;
+    gap          : 5px;
+    padding      : 3px 9px;
+    border-radius: 20px;
+    font-size    : 11px;
+    font-weight  : 500;
+    border       : 1px solid var(--vscode-widget-border, #454545);
+    background   : var(--vscode-badge-background, #3a3d41);
+    color        : var(--vscode-badge-foreground, #ccc);
+    white-space  : nowrap;
+  }
+
+  .pill-dot {
+    width        : 6px;
+    height       : 6px;
+    border-radius: 50%;
+    background   : var(--vscode-focusBorder, #007fd4);
+    flex-shrink  : 0;
+  }
+
+  /* controls row */
+  .controls-row {
+    display    : flex;
+    align-items: flex-end;
+    gap        : 10px;
+    flex-wrap  : wrap;
+    margin-bottom: 14px;
+  }
+
+  .field { display:flex; flex-direction:column; gap:4px; }
+
+  .field-label {
+    font-size     : 10px;
+    font-weight   : 600;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+    color         : var(--vscode-descriptionForeground);
+  }
+
+  .field-input {
+    background   : var(--vscode-input-background);
+    color        : var(--vscode-input-foreground);
+    border       : 1px solid var(--vscode-input-border, var(--vscode-widget-border, #555));
+    border-radius: 3px;
+    padding      : 5px 9px;
+    font-family  : var(--vscode-font-family);
+    font-size    : 13px;
+    width        : 120px;
+    outline      : none;
+    height       : 29px;
+    -moz-appearance: textfield;
+  }
+  .field-input::-webkit-outer-spin-button,
+  .field-input::-webkit-inner-spin-button { -webkit-appearance: none; }
+  .field-input:focus  { border-color: var(--vscode-focusBorder, #007fd4); }
+  .field-input.invalid {
+    border-color: var(--vscode-inputValidation-errorBorder, #be1100);
+    background  : var(--vscode-inputValidation-errorBackground, rgba(190,17,0,.1));
+  }
+
+  .hint {
+    font-size: 10px;
+    margin-top: 2px;
+    height : 13px;
+    display: none;
+  }
+
+  /* engine chip */
+  .engine-chip {
+    display        : inline-flex;
+    align-items    : center;
+    justify-content: center;
+    padding        : 0 12px;
+    height         : 29px;
+    border-radius  : 3px;
+    font-size      : 11px;
+    font-weight    : 700;
+    letter-spacing : 0.08em;
+    text-transform : uppercase;
+    background     : color-mix(in srgb, var(--vscode-focusBorder,#007fd4) 18%, transparent);
+    color          : var(--vscode-focusBorder, #007fd4);
+    border         : 1px solid color-mix(in srgb, var(--vscode-focusBorder,#007fd4) 40%, transparent);
+    min-width      : 110px;
+  }
+
+  /* buttons */
+  .btn-primary {
+    background     : var(--vscode-button-background, #0e639c);
+    color          : var(--vscode-button-foreground, #fff);
+    border         : none;
+    border-radius  : 3px;
+    padding        : 0 18px;
+    font-family    : var(--vscode-font-family);
+    font-size      : 12px;
+    font-weight    : 600;
+    cursor         : pointer;
+    height         : 29px;
+    display        : inline-flex;
+    align-items    : center;
+    gap            : 6px;
+    min-width      : 100px;
+    justify-content: center;
+    transition     : background 0.1s;
+  }
+  .btn-primary:hover:not(:disabled) { background: var(--vscode-button-hoverBackground, #1177bb); }
+  .btn-primary:disabled { opacity:.45; cursor:not-allowed; pointer-events:none; }
+
+  .btn-secondary {
+    background   : var(--vscode-button-secondaryBackground, #3a3d41);
+    color        : var(--vscode-button-secondaryForeground, #ccc);
+    border       : none;
+    border-radius: 3px;
+    padding      : 0 13px;
+    font-family  : var(--vscode-font-family);
+    font-size    : 12px;
+    cursor       : pointer;
+    height       : 29px;
+    display      : none;
+    transition   : background 0.1s;
+  }
+  .btn-secondary:hover { background: var(--vscode-button-secondaryHoverBackground, #45494e); }
+
+  /* dot spinner inside button */
+  @keyframes dp { 0%,80%,100%{transform:scale(.55);opacity:.3} 40%{transform:scale(1);opacity:1} }
+  .dots { display:none; align-items:center; gap:3px; }
+  .dots span {
+    display:inline-block; width:5px; height:5px; border-radius:50%;
+    background:var(--vscode-button-foreground,#fff);
+    animation:dp 1.3s infinite ease-in-out;
+  }
+  .dots span:nth-child(2){animation-delay:.15s}
+  .dots span:nth-child(3){animation-delay:.30s}
+
+  /* status badge (inline with buttons) */
+  .status-badge {
+    display       : none;
+    align-items   : center;
+    gap           : 6px;
+    padding       : 0 11px;
+    border-radius : 3px;
+    font-size     : 11px;
+    font-weight   : 600;
+    border        : 1px solid transparent;
+    height        : 29px;
+    white-space   : nowrap;
+    max-width     : 300px;
+    overflow      : hidden;
+    text-overflow : ellipsis;
+  }
+  .status-badge.running   { display:inline-flex; background:rgba(232,169,34,.12); border-color:rgba(232,169,34,.4); color:#e8a922; }
+  .status-badge.done      { display:inline-flex; background:rgba(72,187,120,.12);  border-color:rgba(72,187,120,.4);  color:#48bb78; }
+  .status-badge.error     { display:inline-flex; background:rgba(244,100,80,.12);  border-color:rgba(244,100,80,.4);  color:#f46450; }
+  .status-badge.cancelled { display:inline-flex; background:rgba(160,160,160,.10); border-color:rgba(160,160,160,.3); color:var(--vscode-descriptionForeground); }
+
+  /* ── Progress block ──────────────────────────────────────────── */
+  .progress-block {
+    display: none;   /* shown only while running or just done */
+  }
+  .progress-block.visible { display: block; }
+
+  /* Track + fill */
+  .prog-track {
+    position     : relative;
+    height       : 6px;
+    border-radius: 3px;
+    background   : var(--vscode-widget-border, #3a3d41);
+    overflow     : hidden;
+    margin-bottom: 6px;
+  }
+
+  .prog-fill {
+    position      : absolute;
+    inset         : 0;
+    left          : 0;
+    width         : 0%;
+    border-radius : 3px;
+    background    : var(--vscode-focusBorder, #007fd4);
+    transition    : width .4s cubic-bezier(.4,0,.2,1),
+                    background .3s;
+  }
+
+  /* Shimmer sweep while running */
+  @keyframes shimmer {
+    0%   { transform: translateX(-100%); }
+    100% { transform: translateX(400%); }
+  }
+  .prog-fill.running::after {
+    content   : '';
+    position  : absolute;
+    inset     : 0;
+    background: linear-gradient(90deg,
+      transparent 0%,
+      rgba(255,255,255,.25) 50%,
+      transparent 100%);
+    animation : shimmer 1.6s infinite linear;
+  }
+
+  .prog-fill.complete { background: #48bb78; }
+  .prog-fill.failed   { background: #f46450; }
+
+  /* Labels row below bar */
+  .prog-labels {
+    display        : flex;
+    justify-content: space-between;
+    align-items    : center;
+    font-size      : 10px;
+    color          : var(--vscode-descriptionForeground);
+    margin-bottom  : 8px;
+  }
+
+  .prog-pct {
+    font-weight   : 700;
+    font-size     : 11px;
+    color         : var(--vscode-foreground);
+    min-width     : 32px;
+    text-align    : right;
+  }
+
+  /* Commit log */
+  .commit-log {
+    display   : flex;
+    flex-wrap : wrap;
+    gap       : 4px;
+    min-height: 20px;
+  }
+
+  .commit-pill {
+    display       : inline-flex;
+    align-items   : center;
+    gap           : 4px;
+    padding       : 2px 7px;
+    border-radius : 3px;
+    font-size     : 10px;
+    font-weight   : 500;
+    background    : color-mix(in srgb, var(--vscode-focusBorder,#007fd4) 15%, transparent);
+    border        : 1px solid color-mix(in srgb, var(--vscode-focusBorder,#007fd4) 35%, transparent);
+    color         : var(--vscode-focusBorder, #007fd4);
+    animation     : pill-in .2s ease;
+  }
+
+  @keyframes pill-in {
+    from { opacity:0; transform:scale(.85); }
+    to   { opacity:1; transform:scale(1);   }
+  }
+
+  /* ── Bottom data panes ───────────────────────────────────────── */
+  .data-area {
+    flex                 : 1;
+    display              : grid;
+    grid-template-columns: 1fr 1fr;
+    min-height           : 0;
+    overflow             : hidden;
+  }
+
+  .data-pane {
+    display       : flex;
+    flex-direction: column;
+    min-height    : 0;
+    overflow      : hidden;
+  }
+
+  .data-pane + .data-pane {
+    border-left: 1px solid var(--vscode-widget-border, #454545);
+  }
+
+  .pane-header {
+    flex-shrink    : 0;
+    padding        : 7px 14px;
+    display        : flex;
+    align-items    : center;
+    justify-content: space-between;
+    background     : var(--vscode-editorGroupHeader-tabsBackground, var(--vscode-editor-background));
+    border-bottom  : 1px solid var(--vscode-widget-border, #454545);
+  }
+
+  .pane-title {
+    font-size     : 10px;
+    font-weight   : 700;
+    letter-spacing: 0.09em;
+    text-transform: uppercase;
+    color         : var(--vscode-descriptionForeground);
+  }
+
+  .pane-badge {
+    font-size    : 10px;
+    font-weight  : 600;
+    padding      : 1px 7px;
+    border-radius: 20px;
+    background   : var(--vscode-badge-background, #3a3d41);
+    color        : var(--vscode-badge-foreground, #ccc);
+    border       : 1px solid var(--vscode-widget-border, #454545);
+  }
+
+  pre {
+    flex       : 1;
+    margin     : 0;
+    padding    : 12px 14px;
+    font-family: var(--vscode-editor-font-family, monospace);
+    font-size  : 11.5px;
+    line-height: 1.55;
+    overflow   : auto;
+    white-space: pre;
+    word-break : normal;
+    background : transparent;
+    color      : var(--vscode-editor-foreground, var(--vscode-foreground));
+  }
+</style>
+</head>
+<body>
+
+<!-- ── GENERATE PANEL ────────────────────────────────────────── -->
+<div class="gen-panel">
+
+  <div class="gen-title">Generate Synthetic Data</div>
+
+  <div class="meta-row">
+    <span class="pill"><span class="pill-dot"></span>${dataKind}</span>
+    <span class="pill"><span class="pill-dot"></span>${baselineRows.toLocaleString()} baseline rows</span>
+    <span class="pill"><span class="pill-dot"></span>${colCount} columns</span>
+  </div>
+
+  <!-- Input + buttons -->
+  <div class="controls-row">
+    <div class="field">
+      <span class="field-label">Rows to generate</span>
+      <input id="rowInput" class="field-input" type="number"
+             value="500" min="1" max="100000" autocomplete="off"/>
+      <div id="hint" class="hint"></div>
+    </div>
+
+    <div class="field">
+      <span class="field-label">Engine</span>
+      <span id="engineChip" class="engine-chip">${engineName}</span>
+    </div>
+
+    <button id="btnGenerate" class="btn-primary">
+      <span class="dots" id="dots"><span></span><span></span><span></span></span>
+      <span id="btnLabel">Generate</span>
+    </button>
+
+    <button id="btnCancel" class="btn-secondary">Cancel</button>
+
+    <div id="statusBadge" class="status-badge"></div>
+  </div>
+
+  <!-- Progress block (hidden until run starts) -->
+  <div id="progressBlock" class="progress-block">
+    <div class="prog-track">
+      <div id="progFill" class="prog-fill"></div>
+    </div>
+    <div class="prog-labels">
+      <span id="progDetail">Waiting for first commit…</span>
+      <span id="progPct" class="prog-pct">0%</span>
+    </div>
+    <div id="commitLog" class="commit-log"></div>
+  </div>
+
+</div>
+
+<!-- ── DATA PANES ────────────────────────────────────────────── -->
+<div class="data-area">
+  <div class="data-pane">
+    <div class="pane-header">
+      <span class="pane-title">Parse Output</span>
+      <span class="pane-badge">AST</span>
+    </div>
+    <pre>${astJson}</pre>
+  </div>
+  <div class="data-pane">
+    <div class="pane-header">
+      <span class="pane-title">Baseline Output</span>
+      <span class="pane-badge">Stats</span>
+    </div>
+    <pre>${baselineJson}</pre>
+  </div>
+</div>
+
+<script>
+(function () {
+  'use strict';
+
+  // acquireVsCodeApi is injected by the VS Code runtime before this script
+  // runs. Never add a Content-Security-Policy that blocks it.
+  const vscode = acquireVsCodeApi();
+
+  const MAX_ROWS  = 100_000;
+  const WARN_ROWS = 50_000;
+
+  const rowInput   = document.getElementById('rowInput');
+  const hint       = document.getElementById('hint');
+  const btnGen     = document.getElementById('btnGenerate');
+  const btnCancel  = document.getElementById('btnCancel');
+  const dots       = document.getElementById('dots');
+  const btnLabel   = document.getElementById('btnLabel');
+  const badge      = document.getElementById('statusBadge');
+  const chipEl     = document.getElementById('engineChip');
+  const progBlock  = document.getElementById('progressBlock');
+  const progFill   = document.getElementById('progFill');
+  const progPct    = document.getElementById('progPct');
+  const progDetail = document.getElementById('progDetail');
+  const commitLog  = document.getElementById('commitLog');
+
+  const BASELINE_ROWS = ${baselineRows};
+  let isRunning = false;
+
+  function engineName(r) {
+    if (r < 1000)  return 'statistical';
+    if (r < 50000) return 'probabilistic';
+    return 'ctgan';
+  }
+
+  /* ── validation ─────────────────────────────────────────────── */
+  function validate() {
+    const raw = rowInput.value.trim();
+    const n   = Number(raw);
+    if (raw === '' || !Number.isFinite(n) || n <= 0 || !Number.isInteger(n)) {
+      return { ok: false, n: NaN, msg: 'Enter a whole number greater than 0', warn: false };
+    }
+    if (n > MAX_ROWS) {
+      return { ok: false, n, msg: 'Maximum is 100,000 rows', warn: false };
+    }
+    return { ok: true, n, msg: n > WARN_ROWS ? '⚠ Large count — may take several minutes' : '', warn: true };
+  }
+
+  function refreshUI() {
+    const { ok, msg, warn } = validate();
+    rowInput.classList.toggle('invalid', !ok);
+    hint.style.display  = msg ? 'block' : 'none';
+    hint.style.color    = warn ? '#e8a922' : 'var(--vscode-inputValidation-errorForeground, #f48771)';
+    hint.textContent    = msg;
+    btnGen.disabled     = !ok || isRunning;
+    chipEl.textContent  = engineName(BASELINE_ROWS);
+  }
+
+  /* ── state helpers ───────────────────────────────────────────── */
+  function setRunning(on) {
+    isRunning               = on;
+    btnGen.disabled         = on;
+    dots.style.display      = on ? 'flex'         : 'none';
+    btnLabel.textContent    = on ? 'Generating…'  : 'Generate';
+    btnCancel.style.display = on ? 'inline-block' : 'none';
+    rowInput.disabled       = on;
+  }
+
+  function showBadge(cls, text) {
+    badge.className   = 'status-badge ' + cls;
+    badge.textContent = text;
+  }
+
+  /* ── progress helpers ────────────────────────────────────────── */
+  let knownRounds = 0;
+
+  function resetProgress() {
+    knownRounds        = 0;
+    progFill.style.width  = '0%';
+    progFill.className    = 'prog-fill running';
+    progPct.textContent   = '0%';
+    progDetail.textContent = 'Waiting for first commit…';
+    commitLog.innerHTML   = '';
+    progBlock.classList.add('visible');
+  }
+
+  function applyProgress(data) {
+    const pct = Math.min(data.pct, 100);
+
+    progFill.style.width  = pct + '%';
+    progPct.textContent   = pct + '%';
+    progDetail.textContent =
+      data.collected.toLocaleString() + ' / ' + data.requested.toLocaleString() +
+      ' rows  ·  round ' + data.round;
+
+    // Append a pill for each new round that arrived since last update
+    for (let r = knownRounds + 1; r <= data.round; r++) {
+      const pill = document.createElement('span');
+      pill.className   = 'commit-pill';
+      pill.textContent = 'Round ' + r;
+      commitLog.appendChild(pill);
+    }
+    knownRounds = data.round;
+  }
+
+  function finalizeProgress(success) {
+    progFill.className = 'prog-fill ' + (success ? 'complete' : 'failed');
+    progFill.style.width = success ? '100%' : progFill.style.width;
+    if (success) {
+      progPct.textContent    = '100%';
+      progDetail.textContent = 'Complete';
+    }
+  }
+
+  /* ── actions ─────────────────────────────────────────────────── */
+  btnGen.addEventListener('click', function () {
+    const { ok, n } = validate();
+    if (!ok || isRunning) return;
+    setRunning(true);
+    showBadge('running', '⏳  Running…');
+    resetProgress();
+    vscode.postMessage({ command: 'generate', n: n });
+  });
+
+  btnCancel.addEventListener('click', function () {
+    vscode.postMessage({ command: 'cancel' });
+    setRunning(false);
+    finalizeProgress(false);
+    showBadge('cancelled', '⬛  Cancelled');
+  });
+
+  /* ── messages from extension host ───────────────────────────── */
+  window.addEventListener('message', function (event) {
+    var d = event.data;
+
+    if (d.type === 'progress') {
+      applyProgress(d);
+      return;
+    }
+
+    setRunning(false);
+
+    if (d.type === 'done') {
+      finalizeProgress(true);
+      showBadge('done', '✅  Done — ' + d.text);
+    } else if (d.type === 'error') {
+      finalizeProgress(false);
+      showBadge('error', '❌  ' + d.text);
+    }
+  });
+
+  rowInput.addEventListener('input', refreshUI);
+  refreshUI();
+}());
+</script>
+</body>
+</html>`;
+
+    // ── Active generator process handle (for Cancel support) ─────────────
+    let activeHandle: GeneratorHandle | null = null;
+
+    panel.webview.onDidReceiveMessage(async (message: any) => {
+
+        if (message.command === "cancel") {
+            if (activeHandle) {
+                try { activeHandle.proc.kill(); } catch {}
+                activeHandle = null;
             }
-            window.addEventListener('message', e => {
-                document.getElementById('status').textContent = e.data.text;
-            });
-        </script>
-    </body>
-    </html>
-    `;
+            return;
+        }
 
-    panel.webview.onDidReceiveMessage(async (msg: any) => {
-        if (msg.command !== "generate") { return; }
+        if (message.command !== "generate") { return; }
+
+        const workspaceDir = vscode.workspace.workspaceFolders?.[0].uri.fsPath ?? os.tmpdir();
+        const cacheDir     = path.join(workspaceDir, ".idelense", "cache");
+        fs.mkdirSync(cacheDir, { recursive: true });
 
         const tmpPath = path.join(os.tmpdir(), `idelense_baseline_${Date.now()}.json`);
         fs.writeFileSync(tmpPath, JSON.stringify(baseline));
 
+        // Wire the progress callback → webview postMessage
+        activeHandle = spawnGenerator(
+            context, filePath, tmpPath, message.n, cacheDir,
+            (snap) => {
+                panel.webview.postMessage({
+                    type      : "progress",
+                    pct       : snap.pct,
+                    collected : snap.collected,
+                    requested : snap.requested,
+                    round     : snap.round,
+                });
+            }
+        );
+
         try {
-            const result = await runGenerator(context, filePath, tmpPath, msg.n);
-            showCheckpointMonitor(context, result);   // 4e — was showGeneratorResult(result)
-            panel.webview.postMessage({ text: `✓ Done — ${result.row_count} rows (${result.generator_used})` });
+            const result  = await activeHandle.promise;
+            activeHandle  = null;
+            showCheckpointMonitor(context, result);
+            panel.webview.postMessage({
+                type: "done",
+                text: `${result.row_count} rows (${result.generator_used})`
+            });
         } catch (err: any) {
-            panel.webview.postMessage({ text: `⚠ Error: ${err}` });
+            activeHandle = null;
+            const errStr = String(err);
+            if (errStr.includes("code null") || errStr.includes("killed")) { return; }
+            panel.webview.postMessage({ type: "error", text: errStr });
             vscode.window.showErrorMessage("Generator error: " + err);
         } finally {
             try { fs.unlinkSync(tmpPath); } catch {}
         }
+
     }, undefined, context.subscriptions);
 }
 
