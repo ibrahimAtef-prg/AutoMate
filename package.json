@@ -1,0 +1,106 @@
+{
+  "name": "automate",
+  "displayName": "AutoMate \u2014 AI Data Privacy & Governance Platform",
+  "description": "A comprehensive AI Data Privacy & Governance platform for VS Code. Generates synthetic datasets, evaluates privacy risks, scans for PII/secrets, simulates privacy attacks, tracks data lineage, and provides AI-powered analysis \u2014 all inside your editor.",
+  "version": "0.0.1",
+  "engines": {
+    "vscode": "^1.70.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [
+    "onStartupFinished",
+    "onLanguage:python"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "idelense.parseDataset",
+        "title": "IDE Lense: Analyse Dataset"
+      },
+      {
+        "command": "idelense.generateSynthetic",
+        "title": "IDE Lense: Generate Synthetic Data"
+      },
+      {
+        "command": "idelense.openCheckpoint",
+        "title": "IDE Lense: Open Checkpoint Monitor"
+      },
+      {
+        "command": "automate.scanDataset",
+        "title": "AutoMate: Scan Dataset for PII & Secrets"
+      },
+      {
+        "command": "automate.anonymizeDataset",
+        "title": "AutoMate: Anonymize Dataset"
+      },
+      {
+        "command": "automate.runAttackSimulation",
+        "title": "AutoMate: Run Attack Simulation"
+      },
+      {
+        "command": "automate.generateDatasetCard",
+        "title": "AutoMate: Generate Dataset Card"
+      },
+      {
+        "command": "automate.scanPrompt",
+        "title": "AutoMate: Scan Prompt for Leakage"
+      },
+      {
+        "command": "automate.askAI",
+        "title": "AutoMate: Ask AI about Data"
+      },
+      {
+        "command": "automate.openDashboard",
+        "title": "AutoMate: Open Aurora Privacy Dashboard"
+      }
+    ]
+  },
+  "configuration": {
+    "title": "AutoMate Privacy Platform",
+    "properties": {
+      "idelense.pythonPath": {
+        "type": "string",
+        "default": "python3",
+        "description": "Path to the Python executable used to run parse/baseline/generator scripts."
+      },
+      "idelense.pipelinePath": {
+        "type": "string",
+        "default": "",
+        "description": "Absolute path to the leakage-extension root directory (the folder that contains pipeline/ and governance_core/). Required for Leakage Analysis. Leave empty to let the bridge auto-discover the pipeline."
+      },
+      "automate.openrouterApiKey": {
+        "type": "string",
+        "default": "",
+        "description": "OpenRouter API key for free-tier LLM access (AI Insights). Get one free at https://openrouter.ai/keys"
+      }
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run package",
+    "compile": "webpack",
+    "watch": "webpack --watch",
+    "package": "webpack --mode production --devtool hidden-source-map",
+    "compile-tests": "tsc -p . --outDir out",
+    "watch-tests": "tsc -p . -w --outDir out",
+    "pretest": "npm run compile-tests && npm run compile && npm run lint",
+    "lint": "eslint src",
+    "test": "vscode-test",
+    "compile-ts": "tsc -p ./"
+  },
+  "devDependencies": {
+    "@types/vscode": "^1.109.0",
+    "@types/mocha": "^10.0.10",
+    "@types/node": "22.x",
+    "typescript-eslint": "^8.54.0",
+    "eslint": "^9.39.2",
+    "typescript": "^5.9.3",
+    "ts-loader": "^9.5.4",
+    "webpack": "^5.104.1",
+    "webpack-cli": "^6.0.1",
+    "@vscode/test-cli": "^0.0.12",
+    "@vscode/test-electron": "^2.5.2"
+  }
+}

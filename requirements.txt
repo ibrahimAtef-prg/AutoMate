@@ -1,0 +1,24 @@
+# Auto Mate — Python Backend Dependencies
+# Install with: pip install -r requirements.txt
+
+# Core data processing
+pandas>=1.5.0
+numpy>=1.23.0
+openpyxl>=3.0.0          # Excel (.xlsx) support
+pyarrow>=10.0.0           # Parquet support
+
+# Statistical & ML (for ProbabilisticEngine)
+scipy>=1.9.0              # Gaussian copula (probit / ndtr transforms)
+
+# Optional: SQL parsing
+sqlparse>=0.4.0           # Nicer SQL AST; falls back to regex if not installed
+
+# Optional: CTGAN (for large datasets >= 50,000 rows)
+# ctgan>=0.7.0            # Uncomment to enable CTGANEngine
+                          # Falls back to ProbabilisticEngine if not installed
+
+# ── Leakage Analysis Pipeline ─────────────────────────────────────────────
+# Required when using leakage_bridge.py (automatic privacy risk assessment).
+# Install the leakage-extension separately and set idelense.pipelinePath.
+scikit-learn>=1.1.0       # DOMIAS membership inference (NearestNeighbors, StandardScaler)
+typing-extensions>=4.0.0  # governance_core/schemas.py
