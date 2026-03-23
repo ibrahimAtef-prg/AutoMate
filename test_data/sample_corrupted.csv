@@ -1,6 +1,0 @@
-age,income,gender
-25,42000,Male,EXTRA_FIELD,another_extra
-34,87000
-45,120000,Male,extra
-,,,,,,,
-not_a_number,also_not,???
