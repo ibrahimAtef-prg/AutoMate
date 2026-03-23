@@ -1,0 +1,397 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "urn:automate:governance:leakage-output:v1",
+  "title": "LeakageOutput",
+  "description": "Authoritative schema for all data flowing from leakage_bridge.py to the frontend and LLM context builder.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "risk_level",
+    "privacy_score",
+    "privacy_score_reliable",
+    "statistical_drift",
+    "duplicates_rate",
+    "membership_inference_auc",
+    "avg_drift_score",
+    "top_threats",
+    "threat_details",
+    "column_drift",
+    "reidentification_risk",
+    "sensitive_column_ranking",
+    "has_uncertainty",
+    "uncertainty_notes",
+    "error",
+    "_mode",
+    "privacy_components",
+    "attack_results",
+    "num_cols_analysed",
+    "cat_cols_analysed",
+    "n_samples",
+    "dataset_risk_score",
+    "statistical_reliability_score",
+    "pii_columns",
+    "outlier_risk",
+    "dataset_intelligence_risk",
+    "privacy_recommendations"
+  ],
+  "properties": {
+    "risk_level": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "enum": [
+        "low",
+        "medium",
+        "high",
+        "critical",
+        null
+      ]
+    },
+    "privacy_score": {
+      "type": [
+        "number",
+        "null"
+      ]
+    },
+    "privacy_score_reliable": {
+      "type": "boolean"
+    },
+    "statistical_drift": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "enum": [
+        "low",
+        "moderate",
+        "high",
+        "unknown",
+        null
+      ]
+    },
+    "duplicates_rate": {
+      "type": [
+        "number",
+        "null"
+      ]
+    },
+    "membership_inference_auc": {
+      "type": [
+        "number",
+        "null"
+      ]
+    },
+    "avg_drift_score": {
+      "type": [
+        "number",
+        "null"
+      ]
+    },
+    "top_threats": {
+      "type": "array",
+      "items": {
+        "type": "object"
+      }
+    },
+    "threat_details": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "name",
+          "severity",
+          "confidence",
+          "triggered_by",
+          "description"
+        ],
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "severity": {
+            "type": "string",
+            "enum": [
+              "low",
+              "medium",
+              "high",
+              "critical"
+            ]
+          },
+          "confidence": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1
+          },
+          "impacted_property": {
+            "type": "string"
+          },
+          "triggered_by": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "description": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "column_drift": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "number"
+      }
+    },
+    "reidentification_risk": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "number"
+      }
+    },
+    "sensitive_column_ranking": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "column",
+          "score",
+          "pii_score",
+          "reidentification_risk",
+          "drift_score"
+        ],
+        "properties": {
+          "column": {
+            "type": "string"
+          },
+          "score": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1
+          },
+          "pii_score": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1
+          },
+          "reidentification_risk": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1
+          },
+          "drift_score": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1
+          },
+          "signals": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      }
+    },
+    "has_uncertainty": {
+      "type": "boolean"
+    },
+    "uncertainty_notes": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "error": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "_mode": {
+      "type": "string"
+    },
+    "privacy_components": {
+      "type": [
+        "object",
+        "null"
+      ],
+      "required": [
+        "duplicates_risk",
+        "mi_attack_risk",
+        "distance_similarity_risk",
+        "distribution_drift_risk"
+      ],
+      "properties": {
+        "duplicates_risk": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "mi_attack_risk": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "distance_similarity_risk": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "distribution_drift_risk": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        }
+      }
+    },
+    "attack_results": {
+      "type": "object",
+      "properties": {
+        "membership_attack_success": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "reconstruction_risk": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "nearest_neighbor_leakage": {
+          "type": [
+            "number",
+            "null"
+          ]
+        }
+      }
+    },
+    "num_cols_analysed": {
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
+    "cat_cols_analysed": {
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
+    "n_samples": {
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
+    "dataset_risk_score": {
+      "type": [
+        "number",
+        "null"
+      ]
+    },
+    "statistical_reliability_score": {
+      "type": [
+        "number",
+        "null"
+      ]
+    },
+    "pii_columns": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "outlier_risk": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "severity": {
+            "type": "string",
+            "enum": [
+              "low",
+              "medium",
+              "high",
+              "critical"
+            ]
+          },
+          "column": {
+            "type": "string"
+          },
+          "value": {
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "description": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "dataset_intelligence_risk": {
+      "type": "object",
+      "properties": {
+        "score": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "label": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "enum": [
+            "low",
+            "medium",
+            "high",
+            "critical",
+            null
+          ]
+        },
+        "breakdown": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "number"
+          }
+        }
+      }
+    },
+    "privacy_recommendations": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "column": {
+            "type": "string"
+          },
+          "action": {
+            "type": "string"
+          },
+          "reason": {
+            "type": "string"
+          },
+          "urgency": {
+            "type": "string",
+            "enum": [
+              "low",
+              "medium",
+              "high",
+              "critical"
+            ]
+          }
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,137 @@
+# AutoMate Aurora — Data Governance Policy
+# Phase 4: Real-Time Data Leakage Monitoring
+#
+# Each rule specifies what triggers it and the enforcement action:
+#   block  — raise an error diagnostic + VS Code blocking warning
+#   warn   — raise a warning diagnostic + VS Code toast notification
+#   log    — silent alert (logged to alert store only)
+#
+# Severity overrides: optional, defaults apply if omitted.
+
+rules:
+
+  # ── Secrets ───────────────────────────────────────────────────────────────
+
+  block_private_keys:
+    enabled: true
+    action: block
+    severity: critical
+    description: "Private keys (RSA, EC, DSA) must never appear in workspace files."
+
+  block_aws_keys:
+    enabled: true
+    action: block
+    severity: critical
+    description: "AWS Access Key IDs indicate cloud credential exposure."
+
+  block_credit_cards:
+    enabled: true
+    action: block
+    severity: critical
+    description: "Credit card numbers are regulated PCI-DSS data."
+
+  block_connection_strings:
+    enabled: true
+    action: block
+    severity: high
+    description: "Database connection strings may embed credentials."
+
+  warn_on_api_keys:
+    enabled: true
+    action: warn
+    severity: high
+    description: "Generic API keys / secrets should not be hard-coded."
+
+  warn_on_openai_keys:
+    enabled: true
+    action: warn
+    severity: high
+    description: "OpenAI API keys expose paid-API access and usage data."
+
+  warn_on_jwt:
+    enabled: true
+    action: warn
+    severity: high
+    description: "JWT tokens may grant authentication to protected services."
+
+  warn_on_password:
+    enabled: true
+    action: warn
+    severity: high
+    description: "Hardcoded passwords violate secret management best practices."
+
+  warn_on_bearer_token:
+    enabled: true
+    action: warn
+    severity: high
+    description: "Bearer tokens grant delegated API access."
+
+  warn_on_github_token:
+    enabled: true
+    action: warn
+    severity: high
+    description: "GitHub tokens can expose repository and organization access."
+
+  # ── PII ───────────────────────────────────────────────────────────────────
+
+  warn_on_ssn:
+    enabled: true
+    action: block
+    severity: critical
+    description: "Social Security Numbers are the highest-risk PII category."
+
+  warn_on_email:
+    enabled: true
+    action: warn
+    severity: medium
+    description: "Email addresses in code may indicate PII exposure."
+
+  warn_on_credit_card:
+    enabled: true
+    action: block
+    severity: critical
+    description: "Credit card numbers must never appear in plaintext."
+
+  # ── Prompt leakage ────────────────────────────────────────────────────────
+
+  warn_on_prompt_pii:
+    enabled: true
+    action: warn
+    severity: medium
+    description: "PII detected in an LLM prompt. Anonymize before sending."
+
+  warn_on_prompt_secrets:
+    enabled: true
+    action: block
+    severity: critical
+    description: "Secrets in LLM prompts risk exposure to third-party model providers."
+
+  warn_on_prompt_medical:
+    enabled: true
+    action: warn
+    severity: high
+    description: "Medical records in prompts violate HIPAA when sent to external LLMs."
+
+  # ── Dataset files ─────────────────────────────────────────────────────────
+
+  warn_on_high_risk_dataset:
+    enabled: true
+    action: warn
+    severity: high
+    description: "Dataset with PII density > 0.4 or risk score > 60 requires review."
+
+  log_dataset_open:
+    enabled: true
+    action: log
+    severity: low
+    description: "Log all dataset file openings for audit trail."
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Thresholds
+# ─────────────────────────────────────────────────────────────────────────────
+
+thresholds:
+  pii_density_warn: 0.40      # Warn if PII fraction of cells exceeds this
+  pii_density_block: 0.70     # Block (prevent save) if PII density exceeds this
+  dataset_risk_score_warn: 60 # Warn if dataset risk score exceeds this (0-100)
+  prompt_pii_max_items: 0     # 0 = any PII triggers policy; increase to allow some

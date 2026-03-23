@@ -1,0 +1,1 @@
+"""AutoMate core utility package."""
